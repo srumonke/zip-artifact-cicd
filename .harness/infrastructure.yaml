@@ -1,0 +1,17 @@
+infrastructureDefinition:
+  name: Zip Demo Target
+  identifier: zip_demo_target
+  orgIdentifier: default
+  projectIdentifier: <YOUR_PROJECT>
+  environmentRef: test
+  deploymentType: CustomDeployment
+  type: CustomDeployment
+  spec:
+    customDeploymentRef:
+      templateRef: zip_deploy_target
+      versionLabel: v1
+    variables:
+      - name: deployDir
+        type: String
+        value: /tmp/zip-demo
+  allowSimultaneousDeployments: false

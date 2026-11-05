@@ -1,0 +1,28 @@
+service:
+  name: Zip Demo
+  identifier: zip_demo
+  orgIdentifier: default
+  projectIdentifier: <YOUR_PROJECT>
+  description: Primary artifact = the generic ZIP in Harness Artifact Registry, addressed by the SAME expression the CI stage pushes with. No output variables.
+  serviceDefinition:
+    type: CustomDeployment
+    spec:
+      customDeploymentRef:
+        templateRef: zip_deploy_target
+        versionLabel: v1
+      artifacts:
+        primary:
+          primaryArtifactRef: app_zip
+          sources:
+            # THIS is the handoff between CI and CD. The coordinates below match
+            # exactly what the CI HarUpload step pushes to. Nothing is passed
+            # between the stages via output variables.
+            - identifier: app_zip
+              type: Har
+              spec:
+                registryRef: <YOUR_REGISTRY>
+                type: generic
+                spec:
+                  artifact: demo-app
+                  version: 1.0.<+pipeline.sequenceId>
+                  fileName: demo-app-1.0.<+pipeline.sequenceId>.zip

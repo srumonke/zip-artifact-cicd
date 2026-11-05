@@ -1,0 +1,197 @@
+pipeline:
+  name: ZIP Build and Deploy
+  identifier: zip_build_deploy
+  projectIdentifier: <YOUR_PROJECT>
+  orgIdentifier: default
+  description: |-
+    Minimal demo: build a ZIP, push it to Harness Artifact Registry, then deploy
+    THAT SAME ZIP. No output variables are passed between the push step and the
+    deploy step. Both sides address the artifact by the same deterministic
+    coordinates, and the CD stage resolves the artifact through the SERVICE's
+    artifact source.
+  tags:
+    demo: ""
+  variables:
+    - name: registryName
+      type: String
+      description: Harness Artifact Registry that both stages address
+      required: true
+      value: <YOUR_REGISTRY>
+    - name: packageName
+      type: String
+      description: Generic package name that both stages address
+      required: true
+      value: demo-app
+  stages:
+    - stage:
+        name: Build and Push
+        identifier: build_and_push
+        type: CI
+        description: ""
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Build ZIP
+                  identifier: build_zip
+                  spec:
+                    shell: Sh
+                    command: |-
+                      set -e
+                      ZIP="dist/<+pipeline.variables.packageName>-1.0.<+pipeline.sequenceId>.zip"
+                      mkdir -p app dist
+                      echo "<h1>Demo App</h1>" > app/index.html
+                      echo "version=1.0.<+pipeline.sequenceId>" > app/version.txt
+                      echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> app/version.txt
+
+                      if command -v zip >/dev/null 2>&1; then
+                        (cd app && zip -q -r "../$ZIP" .)
+                      else
+                        (cd app && python3 -m zipfile -c "../$ZIP" index.html version.txt)
+                      fi
+
+                      echo "--- built artifact ---"
+                      ls -l "$ZIP"
+                      sha256sum "$ZIP"
+              - step:
+                  type: HarUpload
+                  name: Push ZIP to Artifact Registry
+                  identifier: push_zip
+                  spec:
+                    registryRef: <+pipeline.variables.registryName>
+                    packageType: GENERIC
+                    packageName: <+pipeline.variables.packageName>
+                    packageVersion: 1.0.<+pipeline.sequenceId>
+                    sourcePath: /harness/dist/<+pipeline.variables.packageName>-1.0.<+pipeline.sequenceId>.zip
+    - stage:
+        name: Deploy
+        identifier: deploy
+        type: Deployment
+        tags: {}
+        spec:
+          deploymentType: CustomDeployment
+          customDeploymentRef:
+            templateRef: zip_deploy_target
+            versionLabel: v1
+          service:
+            serviceRef: zip_demo
+          environment:
+            environmentRef: test
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: zip_demo_target
+          execution:
+            steps:
+              - step:
+                  type: FetchInstanceScript
+                  name: Fetch Instances
+                  identifier: fetch_instances
+                  timeout: 10m
+                  spec: {}
+              - step:
+                  type: ShellScript
+                  name: Deploy ZIP
+                  identifier: deploy_zip
+                  timeout: 10m
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -euo pipefail
+
+                          # Everything below comes from the SERVICE's resolved artifact
+                          # or from pipeline variables. Nothing is passed in from the
+                          # CI push step via output variables.
+                          ACCOUNT="<YOUR_ACCOUNT_ID>"
+                          REGISTRY="<+pipeline.variables.registryName>"
+                          PACKAGE="<+pipeline.variables.packageName>"
+                          VERSION="<+artifact.version>"
+                          FILE="${PACKAGE}-${VERSION}.zip"
+                          DEST="<+infra.variables.deployDir>/${VERSION}"
+
+                          echo "=============================================="
+                          echo " Artifact resolved by the service artifact source"
+                          echo "   identifier : <+artifact.identifier>"
+                          echo "   type       : <+artifact.type>"
+                          echo "   version    : ${VERSION}"
+                          echo "   file       : ${FILE}"
+                          echo "=============================================="
+
+                          URL="https://pkg.harness.io/pkg/${ACCOUNT}/${REGISTRY}/generic/${PACKAGE}/${VERSION}?filename=${FILE}"
+                          TMP="$(mktemp -d)"
+
+                          echo "--> downloading ${FILE} from Harness Artifact Registry"
+                          curl -sfL "$URL" -H "x-api-key: ${HARNESS_API_KEY}" -o "${TMP}/${FILE}"
+                          ls -l "${TMP}/${FILE}"
+                          sha256sum "${TMP}/${FILE}"
+
+                          echo "--> unzip tool survey on this host"
+                          for t in unzip bsdtar 7z 7za jar busybox python3 python java tar; do
+                            if command -v "$t" >/dev/null 2>&1; then echo "    found: $t"; fi
+                          done
+
+                          echo "--> extracting to ${DEST}"
+                          rm -rf "$DEST"
+                          mkdir -p "$DEST"
+                          if command -v unzip >/dev/null 2>&1; then
+                            unzip -o -q "${TMP}/${FILE}" -d "$DEST"
+                          elif command -v bsdtar >/dev/null 2>&1; then
+                            bsdtar -xf "${TMP}/${FILE}" -C "$DEST"
+                          elif command -v 7z >/dev/null 2>&1; then
+                            7z x -y -o"$DEST" "${TMP}/${FILE}" >/dev/null
+                          elif command -v python3 >/dev/null 2>&1; then
+                            python3 -I -m zipfile -e "${TMP}/${FILE}" "$DEST"
+                          elif command -v jar >/dev/null 2>&1; then
+                            (cd "$DEST" && jar xf "${TMP}/${FILE}")
+                          elif command -v busybox >/dev/null 2>&1; then
+                            (cd "$DEST" && busybox unzip -o -q "${TMP}/${FILE}")
+                          else
+                            echo "no zip extractor found - installing unzip"
+                            if   command -v microdnf  >/dev/null 2>&1; then microdnf install -y unzip
+                            elif command -v dnf       >/dev/null 2>&1; then dnf install -y unzip
+                            elif command -v yum       >/dev/null 2>&1; then yum install -y unzip
+                            elif command -v apk       >/dev/null 2>&1; then apk add --no-cache unzip
+                            elif command -v apt-get   >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq unzip
+                            else echo "no package manager either" >&2; exit 1
+                            fi
+                            unzip -o -q "${TMP}/${FILE}" -d "$DEST"
+                          fi
+                          find "$DEST" -type f | sort
+
+                          echo "--> verifying the deployed bits are the ones CI built"
+                          DEPLOYED="$(grep '^version=' "${DEST}/version.txt" | cut -d= -f2)"
+                          echo "    version.txt inside the zip : ${DEPLOYED}"
+                          echo "    artifact.version from CD    : ${VERSION}"
+                          if [ "$DEPLOYED" != "$VERSION" ]; then
+                            echo "MISMATCH - deployed artifact is not the one CI built" >&2
+                            exit 1
+                          fi
+                          echo "    MATCH - deployed the exact artifact CI pushed"
+
+                          rm -rf "$TMP"
+                    environmentVariables:
+                      - name: HARNESS_API_KEY
+                        type: Secret
+                        value: harness_api_key
+                    outputVariables:
+                      - name: deployedVersion
+                        type: String
+                        value: VERSION
+            rollbackSteps: []
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback

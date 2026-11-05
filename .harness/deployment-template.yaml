@@ -1,0 +1,35 @@
+template:
+  name: Zip Deploy Target
+  identifier: zip_deploy_target
+  versionLabel: v1
+  type: CustomDeployment
+  projectIdentifier: <YOUR_PROJECT>
+  orgIdentifier: default
+  description: Minimal deploy-anywhere target for the zip artifact demo. Steps run on a Linux delegate, so no VM or cluster is required.
+  tags:
+    demo: ""
+  spec:
+    infrastructure:
+      variables:
+        - name: deployDir
+          type: String
+          value: /tmp/zip-demo
+          description: Directory on the delegate the zip is unpacked into
+      fetchInstancesScript:
+        store:
+          type: Inline
+          spec:
+            content: |-
+              #!/usr/bin/env bash
+              set -euo pipefail
+              cat > "$INSTANCE_OUTPUT_PATH" <<EOF
+              { "instances": [ { "instancename": "$(hostname)" } ] }
+              EOF
+              echo "Published 1 instance: $(hostname)"
+      instanceAttributes:
+        - name: instancename
+          jsonPath: instancename
+          description: Delegate host acting as the deploy target
+      instancesListPath: instances
+    execution:
+      stepTemplateRefs: []
